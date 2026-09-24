@@ -213,7 +213,7 @@ function fallbackResponse(agentName: string): LlmResponse {
   return { content: { role: "model", parts: [{ text: JSON.stringify(fallbackOutput(agentName)) }] } };
 }
 
-const TRANSIENT = /(429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE|timeout|ECONNRESET|fetch failed/i;
+const TRANSIENT = /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE|timeout|ECONNRESET|fetch failed/i;
 const MAX_ATTEMPTS = 3;
 
 /**
@@ -287,7 +287,7 @@ export class CareGuardPlugin extends BasePlugin {
 
   /** Records why an agent used its fallback. Only a status code is kept, never request or response text. */
   async recordFallback(agentName: string, reason: string, attempts = 0, failure = "") {
-    const code = failure.match(/(429|5\d\d)/)?.[1] ?? null;
+    const code = failure.match(/\b(?:429|5\d\d)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE_EXCEEDED|DEADLINE|timeout|ECONNRESET|fetch failed/i)?.[0] ?? null;
     await logEvent(this.sb, "model_fallback", this.caseId, { agent: agentName, reason, attempts, code });
   }
 
