@@ -405,6 +405,8 @@ export function createCareWorkflow(deps: WorkflowDeps) {
       const clean = (items: string[] = []) =>
         items
           .filter(grounded)
+          // Internal field names are not user-facing text.
+          .map((s) => s.replace(/\s*[（(][^（）()]*\b(?:not_)?conditioned_on\b[^（）()]*[）)]/g, "").replace(/\b(?:not_)?conditioned_on\b/g, "条件"))
           .map((s) => (violatesStatPolicy(s) ? "統計は参考となる利用傾向であり、この方に適しているかは個別に確認が必要です。" : s));
       // Titles come from the service/action master, never from model text.
       const { services, actions } = await getServicesAndActions(deps.sb);

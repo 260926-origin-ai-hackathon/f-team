@@ -152,14 +152,16 @@ ${COMMON_RULES}
 export function createProposalAgent(guard: CareGuardPlugin) {
   return new LlmAgent({
     name: AGENT_NAMES.proposal,
-    model: new ResilientGemini(MODELS.proposal, AGENT_NAMES.proposal, guard),
+    // flash-lite is only a backup for the last retry when the primary model is rate limited/unavailable.
+    model: new ResilientGemini(MODELS.proposal, AGENT_NAMES.proposal, guard, MODELS.interview),
     description: "ケース情報と保存済みTool結果を統合し、候補となる支援と理由を説明する。",
     instruction: `あなたは Proposal Agent です。入力JSONの caseView（本人・家族の構造化情報）と toolResults（DBに保存済みのTool結果）だけを根拠に、候補を2〜4件提案してください。
 ${COMMON_RULES}
 - 候補は介護サービス（targetType=service）または相談・申請などの行動（targetType=action）です。認定未申請や相談先が分からない場合は行動（A001〜A003）を含めます。
 - whyCandidate / relatedSituations: 本人の状態・希望・家族の状況のどれと関係するかを具体的に書きます。
 - institutionalBasis: toolResults の制度判定（ruleId と説明）に基づいて書きます。デモ用の簡略ルールであることに触れます。制度上対象外となる候補は提案しません。
-- populationContext: 統計は「参考となる利用傾向」としてのみ書きます。どの表（table）を、どの条件（conditioned_on）だけで見たかを明記し、条件にしていない属性があることに触れます。デモの架空値である点も明記します。
+- populationContext: 統計は「参考となる利用傾向」としてのみ書きます。どの表を、どの条件（例：要介護度）だけで見たかを日本語で明記し、条件にしていない属性があることに触れます。デモの架空値である点も明記します。
+  conditioned_on / not_conditioned_on / care_level などのフィールド名や英語のキー名は文章に書かないでください。
   「利用が多いので〜すべき／最適」という説明は絶対にしないでください。統計は推薦の根拠ではありません。
   統計の数値そのもの（人数など）は書かず、「利用が観測されている」など傾向の有無だけを書きます。
 - 事業所名・距離・数値は toolResults にあるものだけを使い、推測で作りません（事業所の一覧は画面側でDBから表示します）。
@@ -215,6 +217,15 @@ function fallbackResponse(agentName: string): LlmResponse {
 
 const TRANSIENT = /\b(429|500|502|503|504)\b|UNAVAILABLE|RESOURCE_EXHAUSTED|DEADLINE|timeout|ECONNRESET|fetch failed/i;
 const MAX_ATTEMPTS = 3;
+const RATE_LIMITED = /\b429\b|RESOURCE_EXHAUSTED/i;
+const MAX_RETRY_DELAY_MS = 15_000;
+
+/** Wait before retrying: a rate limit needs seconds (honoring the API's retryDelay), other errors less. */
+export function retryDelayMs(failure: string, attempt: number) {
+  if (!RATE_LIMITED.test(failure)) return 800 * attempt;
+  const hinted = Number(failure.match(/retryDelay\W+(\d+(?:\.\d+)?)s/)?.[1]);
+  return Math.min(Number.isFinite(hinted) && hinted > 0 ? hinted * 1000 : 4000 * attempt, MAX_RETRY_DELAY_MS);
+}
 
 /**
  * Gemini model that retries transient errors (budget permitting) and otherwise answers with the
@@ -226,6 +237,7 @@ export class ResilientGemini extends Gemini {
     model: string,
     private readonly agentName: string,
     private readonly guard: CareGuardPlugin,
+    private readonly backupModel?: string,
   ) {
     super({ model });
   }
@@ -235,7 +247,9 @@ export class ResilientGemini extends Gemini {
       let failure: string | undefined;
       const responses: LlmResponse[] = [];
       try {
-        for await (const response of super.generateContentAsync(llmRequest, stream, abortSignal)) {
+        // The final retry goes to the backup model, if any (its quota is separate from the primary's).
+        const request = attempt === MAX_ATTEMPTS && this.backupModel ? { ...llmRequest, model: this.backupModel } : llmRequest;
+        for await (const response of super.generateContentAsync(request as LlmRequest, stream, abortSignal)) {
           if (response.errorCode) failure = `${response.errorCode}: ${response.errorMessage ?? ""}`;
           responses.push(response);
         }
@@ -247,7 +261,7 @@ export class ResilientGemini extends Gemini {
         return;
       }
       if (attempt < MAX_ATTEMPTS && TRANSIENT.test(failure) && (await this.guard.allowRetry(this.agentName))) {
-        await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs(failure, attempt)));
         continue;
       }
       console.error(`Gemini failed for ${this.agentName}; using fallback`, failure.slice(0, 200));

@@ -17,6 +17,7 @@ import {
   fallbackOutput,
   interviewOutputSchema,
   proposalOutputSchema,
+  retryDelayMs,
   type CareGuardPlugin,
 } from "@/lib/care-agent/agents";
 import { AGENT_NAMES } from "@/lib/care-agent/domain";
@@ -115,6 +116,29 @@ describe("Gemini failure handling", () => {
     const out = await drain(new ResilientGemini("m", AGENT_NAMES.interview, g).generateContentAsync(request) as AsyncGenerator<Event>);
     expect(out[0].content?.parts?.[0]?.text).toBe("ok");
     expect(g.allowRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits longer on rate limits, honoring the API's retryDelay (capped)", () => {
+    expect(retryDelayMs("503 UNAVAILABLE", 1)).toBe(800);
+    expect(retryDelayMs('429 RESOURCE_EXHAUSTED "retryDelay": "7s"', 1)).toBe(7000);
+    expect(retryDelayMs("429 RESOURCE_EXHAUSTED", 2)).toBe(8000);
+    expect(retryDelayMs('429 "retryDelay": "60s"', 1)).toBe(15000);
+  });
+
+  it("sends the final retry to the backup model when the primary stays rate limited", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const models: (string | undefined)[] = [];
+    vi.spyOn(Gemini.prototype, "generateContentAsync").mockImplementation(async function* (req: LlmRequest) {
+      models.push(req.model);
+      if (req.model !== "backup") throw new Error("429 RESOURCE_EXHAUSTED");
+      yield { content: { role: "model", parts: [{ text: "from backup" }] } };
+    });
+    const run = drain(new ResilientGemini("primary", AGENT_NAMES.proposal, guard(true), "backup").generateContentAsync(request) as AsyncGenerator<Event>);
+    await vi.runAllTimersAsync();
+    const out = await run;
+    vi.useRealTimers();
+    expect(models).toEqual([undefined, undefined, "backup"]);
+    expect(out[0].content?.parts?.[0]?.text).toBe("from backup");
   });
 
   it("falls back (no exception) when the error is not transient or the budget is exhausted", async () => {
