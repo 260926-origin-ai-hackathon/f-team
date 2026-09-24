@@ -103,7 +103,7 @@ describe("Gemini failure handling", () => {
   });
 
   const request = { contents: [], toolsDict: {} } as unknown as LlmRequest;
-  const guard = (allow: boolean) => ({ allowRetry: vi.fn(async () => allow) }) as unknown as CareGuardPlugin & { allowRetry: ReturnType<typeof vi.fn> };
+  const guard = (allow: boolean) => ({ allowRetry: vi.fn(async () => allow), recordFallback: vi.fn(async () => {}) }) as unknown as CareGuardPlugin & { allowRetry: ReturnType<typeof vi.fn>; recordFallback: ReturnType<typeof vi.fn> };
 
   it("retries a transient 503 within budget and returns the real response", async () => {
     let calls = 0;
@@ -121,7 +121,9 @@ describe("Gemini failure handling", () => {
     vi.spyOn(Gemini.prototype, "generateContentAsync").mockImplementation(async function* () {
       throw new Error("503 UNAVAILABLE");
     });
-    const out = await drain(new ResilientGemini("m", AGENT_NAMES.proposal, guard(false)).generateContentAsync(request) as AsyncGenerator<Event>);
+    const g = guard(false);
+    const out = await drain(new ResilientGemini("m", AGENT_NAMES.proposal, g).generateContentAsync(request) as AsyncGenerator<Event>);
+    expect(g.recordFallback).toHaveBeenCalledWith(AGENT_NAMES.proposal, "transient_error", 1, "503 UNAVAILABLE");
     const parsed = JSON.parse(out[0].content!.parts![0].text!);
     expect(proposalOutputSchema.safeParse(parsed).success).toBe(true);
     expect(parsed.fallback).toBe(true);

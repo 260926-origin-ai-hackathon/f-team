@@ -71,7 +71,13 @@ function evidenceFor(proposal: ProposalRow, sources: SourceRow[]): ProposalEvide
     .flatMap((s) => (s.result.results as { ruleId: string; target: { code: string }; effect: string; explanation: string; caveat: string }[]) ?? [])
     .filter((r) => r.target.code === proposal.target_code)
     .map(({ ruleId, effect, explanation, caveat }) => ({ ruleId, effect, explanation, caveat }));
-  const providerResults = sources.filter((s) => s.tool_name === "search_providers" && (s.status === "ok" || s.status === "empty"));
+  // Only searches that included this service say anything about it ("not searched" is not "none found").
+  const providerResults = sources.filter(
+    (s) =>
+      s.tool_name === "search_providers" &&
+      (s.status === "ok" || s.status === "empty") &&
+      ((s.tool_args.serviceCodes as string[] | undefined) ?? []).includes(proposal.target_code),
+  );
   const nearby = providerResults
     .flatMap((s) => (s.result.results as { provider_id: string; care_service_codes: string[] }[]) ?? [])
     .filter((p) => p.care_service_codes?.includes(proposal.target_code));
@@ -127,7 +133,7 @@ export async function buildCaseViewModel(sb: SupabaseClient, caseId: string) {
     const meta = FACT_LABELS[fact.fact_key];
     const catalog = QUESTION_CATALOG.find((q) => q.factKey === fact.fact_key);
     const choiceLabel = catalog?.choices.find((c) => c.value === fact.value)?.label;
-    const value = fact.value_status === "unknown" ? "未確認" : choiceLabel ?? displayValue(fact.value);
+    const value = fact.value_status === "unknown" ? "未確認" : choiceLabel ?? (fact.fact_key === "age" && typeof fact.value === "number" ? `${fact.value}歳` : displayValue(fact.value));
     if (fact.source === "registered_profile" && meta) profile[meta.section].push({ label: meta.label, value });
     else learned.push({ label: meta?.label ?? catalog?.text ?? fact.fact_key, value });
   }

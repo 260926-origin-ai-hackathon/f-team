@@ -11,7 +11,7 @@ import {
   QUESTION_CATALOG,
   SERVICE_CODES,
 } from "./domain";
-import { getUsage, recordUsage } from "./repo";
+import { getUsage, logEvent, recordUsage } from "./repo";
 import { createCollectionTools, type Fault, type ToolContext } from "./tools";
 
 // Exactly three LLM agents. The Orchestrator is the ADK graph (workflow.ts), not an agent.
@@ -251,6 +251,7 @@ export class ResilientGemini extends Gemini {
         continue;
       }
       console.error(`Gemini failed for ${this.agentName}; using fallback`, failure.slice(0, 200));
+      await this.guard.recordFallback(this.agentName, TRANSIENT.test(failure) ? "transient_error" : "model_error", attempt, failure);
       yield fallbackResponse(this.agentName);
       return;
     }
@@ -284,11 +285,23 @@ export class CareGuardPlugin extends BasePlugin {
     return true;
   }
 
+  /** Records why an agent used its fallback. Only a status code is kept, never request or response text. */
+  async recordFallback(agentName: string, reason: string, attempts = 0, failure = "") {
+    const code = failure.match(/(429|5\d\d)/)?.[1] ?? null;
+    await logEvent(this.sb, "model_fallback", this.caseId, { agent: agentName, reason, attempts, code });
+  }
+
   async beforeModelCallback({ callbackContext }: { callbackContext: Context; llmRequest: LlmRequest }) {
     const agentName = callbackContext.agentName;
-    if (this.faults.has("gemini")) return fallbackResponse(agentName);
+    if (this.faults.has("gemini")) {
+      await this.recordFallback(agentName, "fault_injection");
+      return fallbackResponse(agentName);
+    }
     const usage = await getUsage(this.sb, this.caseId);
-    if (usage.gemini_request >= BUDGET.gemini_request) return fallbackResponse(agentName);
+    if (usage.gemini_request >= BUDGET.gemini_request) {
+      await this.recordFallback(agentName, "budget_exhausted");
+      return fallbackResponse(agentName);
+    }
     await recordUsage(this.sb, this.caseId, "gemini_request", agentName);
     return undefined;
   }

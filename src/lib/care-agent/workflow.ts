@@ -337,7 +337,11 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         candidates = ((await getNeedServiceCandidates(tctx, needList)).results as typeof candidates) ?? [];
         supplemented.push("get_need_service_candidates");
       }
-      if (!ran.has("query_stat_table") && typeof known.care_level === "string") {
+      // A stat lookup that ignored the known care level is not specific enough to cite as context.
+      const statByCareLevel = saved.some(
+        (s) => s.tool_name === "query_stat_table" && s.status !== "error" && ((s.result.conditioned_on as string[]) ?? []).includes("care_level"),
+      );
+      if (!statByCareLevel && typeof known.care_level === "string") {
         await queryStatTable(tctx, "K25-42", { care_level: known.care_level });
         supplemented.push("query_stat_table");
       }

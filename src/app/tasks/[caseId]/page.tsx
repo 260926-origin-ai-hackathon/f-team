@@ -86,7 +86,7 @@ export default function TasksPage() {
                       {t.detail && <p className="mt-0.5 text-sm text-gray-600">{t.detail}</p>}
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         {t.requires_official_check && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-900">自治体公式情報を確認</span>}
-                        {t.providerName && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-800">{t.providerName}（架空）</span>}
+                        {t.providerName && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-800">{t.providerName.includes("架空") ? t.providerName : `${t.providerName}（架空）`}</span>}
                       </div>
                     </div>
                   </div>

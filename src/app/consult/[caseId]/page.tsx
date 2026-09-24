@@ -444,7 +444,7 @@ function ProposalCard({
             {list(c.populationContext)}
             {e.statTables.map((t) => (
               <p key={t.table} className="mt-1 text-[11px] leading-relaxed text-gray-400">
-                参照：{t.title}（{t.table}）／条件：{labelDims(t.conditionedOn) || "なし"}のみ
+                参照：{t.title}（{t.table}）／{t.conditionedOn.length ? `条件：${labelDims(t.conditionedOn)}のみ` : "条件：指定なし（全体の集計）"}
                 {t.multipleResponse ? "／複数回答" : ""}
                 {t.isDemo ? "／架空のデモ値" : ""}
               </p>
