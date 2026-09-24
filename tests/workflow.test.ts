@@ -22,7 +22,7 @@ import {
 } from "@/lib/care-agent/agents";
 import { AGENT_NAMES } from "@/lib/care-agent/domain";
 import { pendingInterruptId } from "@/lib/care-agent/turn";
-import { parseReply, routed } from "@/lib/care-agent/workflow";
+import { parseReply, routed, withoutTrailingQuestion } from "@/lib/care-agent/workflow";
 
 async function drain(it: AsyncGenerator<Event>) {
   const events: Event[] = [];
@@ -86,6 +86,11 @@ describe("ADK graph routing / human-input loop", () => {
     expect(parseReply({ result: JSON.stringify({ type: "accept", proposalId: "p1" }) })).toEqual({ type: "accept", proposalId: "p1" });
     expect(parseReply({ parts: [{ text: JSON.stringify({ type: "consult_more" }) }] })).toEqual({ type: "consult_more" });
     expect(parseReply("自由記述です")).toEqual({ type: "message", text: "自由記述です" });
+  });
+
+  it("does not leave a dangling question when the interview moves on to proposals", () => {
+    expect(withoutTrailingQuestion("よく分かりました。最後に、費用面のご心配はありますか？")).toBe("よく分かりました。いただいた情報をもとに、提案をまとめます。");
+    expect(withoutTrailingQuestion("承知しました。提案を作成します。")).toBe("承知しました。提案を作成します。");
   });
 });
 

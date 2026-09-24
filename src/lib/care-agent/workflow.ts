@@ -134,6 +134,14 @@ function toolContext(deps: WorkflowDeps, runId: string, facts: FactRow[], identi
 }
 
 // Compact, PII-free view of stored tool results for the Proposal Agent.
+/** When no question will be shown, a reply must not end by asking one. */
+export function withoutTrailingQuestion(text: string) {
+  const sentences = text.trim().match(/[^。！？!?]+[。！？!?]*/g) ?? [];
+  while (sentences.length && /[？?]\s*$/.test(sentences[sentences.length - 1])) sentences.pop();
+  const kept = sentences.join("").trim();
+  return kept === text.trim() ? kept : `${kept}いただいた情報をもとに、提案をまとめます。`;
+}
+
 function compactSources(sources: SourceRow[]) {
   return sources.map((s) => ({ tool: s.tool_name, args: s.tool_args, status: s.status, result: s.result }));
 }
@@ -198,9 +206,10 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         needs.map((n) => ({ key: `need:${n}`, value: true, source: "agent_inferred" as const })),
         prefix,
       );
-      if (output.assistantMessage?.trim()) {
-        await saveMessage(deps.sb, deps.caseId, { role: "assistant", kind: "text", content: output.assistantMessage.trim() }, `${prefix}:reply`);
-      }
+      const saveReply = async (asking: boolean) => {
+        const text = asking ? output.assistantMessage?.trim() : withoutTrailingQuestion(output.assistantMessage ?? "");
+        if (text) await saveMessage(deps.sb, deps.caseId, { role: "assistant", kind: "text", content: text }, `${prefix}:reply`);
+      };
 
       const [usage, messages] = await Promise.all([getUsage(deps.sb, deps.caseId), listMessages(deps.sb, deps.caseId)]);
       const lastProposalIndex = messages.map((m) => m.kind).lastIndexOf("proposal");
@@ -220,6 +229,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         const payload = catalog
           ? { kind: "catalog", catalogId: catalog.id, text: catalog.text, choices: catalog.choices }
           : { kind: "free_text", text: freeText };
+        await saveReply(true);
         await saveMessage(
           deps.sb,
           deps.caseId,
@@ -229,6 +239,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         await recordUsage(deps.sb, deps.caseId, "question", catalog?.id ?? "free_text");
         return routed(ctx, "apply_interview", "ASK", payload);
       }
+      await saveReply(false);
       ctx.state.set(STATE.forcePropose, false);
       return routed(ctx, "apply_interview", "PROPOSE", { propose: true });
     },
