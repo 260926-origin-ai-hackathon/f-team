@@ -1,0 +1,10 @@
+# Claude Code / agent tooling (not needed to install, build, or run the app)
+/.claude/
+/.agents/
+/docs/
+/CLAUDE.md
+/skills-lock.json
+/.mcp.json
+
+# Local env files (values come from Vercel project environment variables)
+.env*.local
