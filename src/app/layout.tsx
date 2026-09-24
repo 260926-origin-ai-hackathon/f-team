@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI介護施設選びサポート（デモ）",
-  description: "登録されているご本人の情報をもとに、ご家族に合った介護施設をAIが探すデモアプリ",
+  title: "介護の相談AI（デモ）",
+  description: "本人・家族の状況を話すだけで、検討すべきこと・候補となるサービスや相談先が分かり、介護タスクまで進められるデモアプリ",
 };
 
 export const viewport: Viewport = {
