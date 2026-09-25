@@ -55,51 +55,109 @@ LLM のエージェントは次の3つだけです。全体の流れの制御は
   - 1ケースあたり：Gemini 20リクエスト、提案3回、質問5問、送信15回、Web検索1回
   - 匿名ユーザー1人あたり：1日3ケース
 
-## 動作環境
+## 実行方法
 
-開発と動作確認に使ったバージョンです。
+公開中のデモと同じ状態を、手元または自分の Vercel で動かす手順です。
 
-- Node.js 24.21.0
-- npm 11.19.0
+### 必要なもの
 
-## セットアップ
+- Node.js 24 と npm 11（動作確認に使ったのは Node.js 24.21.0 / npm 11.19.0）
+- Supabase のプロジェクト（無料プランで可）
+- Gemini API キー（[Google AI Studio](https://aistudio.google.com/) で発行）
+  - **課金を有効にしたプロジェクトのキーを推奨します。** 無料枠では `gemini-3.5-flash` が1日20リクエストまでで、上限に達すると提案 AI は `gemini-3.5-flash-lite` に切り替わります。
+
+### 1. Supabase を準備する
+
+1. Supabase でプロジェクトを作成します。
+2. Authentication → Sign In / Providers で **「Allow anonymous sign-ins」を有効**にします。ログインなしで使うための設定で、無効だと相談を開始できません。
+3. `supabase/migrations/` の SQL を**ファイル名の順に**すべて適用します。拡張機能（PostGIS / pgvector / PGroonga）、テーブル、RLS、関数、デモデータ、文書の埋め込みまで含まれているので、別途データを投入する必要はありません。適用方法は次のどちらかです。
+   - **SQL Editor:** 各ファイルの内容を古い順に貼り付けて実行します。
+   - **Supabase CLI:**
+
+     ```bash
+     npx supabase init          # supabase/config.toml が無い場合のみ
+     npx supabase login
+     npx supabase link --project-ref <プロジェクトの ref>
+     npx supabase db push
+     ```
+
+4. Project Settings → API Keys で、**Project URL** と **publishable key** を控えます。secret key / service role key は使いません。
+
+### 2. 環境変数を設定する
 
 ```bash
-npm ci
-cp .env.example .env.local   # 値は各自の環境のものを設定する
-npm run dev                  # http://localhost:3000
+cp .env.example .env.local
 ```
 
-### 環境変数
+`.env.local` に値を入れます。このファイルは Git の管理対象外です。
 
-`.env.example` に変数名の一覧があります。値はリポジトリに含めません。
-
-| 変数 | 用途 |
+| 変数 | 設定する値 |
 |---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase プロジェクトの URL |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase の publishable key（ブラウザ・サーバー共通。service role / secret key は使いません） |
-| `GEMINI_API_KEY` | Gemini API キー（サーバー側のみ） |
-| `FAULT_INJECTION_ENABLED` | 任意。`1` のとき、障害を意図的に起こす試験を有効にします（`x-demo-fault` ヘッダー／`?fault=`）。**Preview 専用で、Production には設定しません**（コード側でも Production では無効） |
+| `NEXT_PUBLIC_SUPABASE_URL` | 手順1で控えた Project URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 手順1で控えた publishable key |
+| `GEMINI_API_KEY` | Gemini API キー（サーバー側でのみ使用） |
+| `FAULT_INJECTION_ENABLED` | 通常は空のまま。障害の再現試験をするときだけ `1`（後述） |
 
-### Supabase
+### 3. 起動する
 
-1. 匿名サインイン（Anonymous Sign-ins）を有効にします。
-2. `supabase/migrations/` を順に適用します。テーブル・RLS・関数・デモデータ・文書の埋め込みまで含みます。
-3. デモ文書の埋め込みを作り直す場合は、次を実行して生成した SQL を適用します。
+```bash
+npm ci          # package-lock.json どおりに依存関係を入れる
+npm run dev     # 開発サーバー → http://localhost:3000
+```
+
+本番と同じビルドで動かす場合は、次のとおりです。
+
+```bash
+npm run build
+npm start       # http://localhost:3000
+```
+
+ブラウザで開き、「相談をはじめる」から後述の「デモの操作例」の流れで試せます。
+
+- 匿名ユーザー1人あたり1日3ケースまでです。上限に達したら、別のブラウザやプライベートウィンドウで開くと新しい匿名ユーザーになります。
+
+### 4. テストとチェック
+
+```bash
+npm test             # Vitest（Gemini・DB に接続せずに実行できます）
+npm run lint         # ESLint
+npm run build        # 本番ビルド（環境変数なしでもビルドは通ります）
+npx tsc --noEmit     # 型チェック
+```
+
+- `npx tsc --noEmit` は、**`npm run build`（または `npx next typegen`）の後に**実行してください。
+  - `RouteContext` などの型は、Next.js がビルド時に `.next/types` へ自動生成するためです。
+
+### 5. Vercel にデプロイする
+
+1. このリポジトリを Vercel にインポートします。フレームワークは Next.js が自動で選ばれ、ビルドの設定は既定のままで動きます。
+2. Settings → Environment Variables に、Production と Preview の両方で次の3つを設定します。
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+   - `GEMINI_API_KEY`
+3. `FAULT_INJECTION_ENABLED=1` は、障害の再現試験をしたい場合だけ **Preview にのみ**設定します。Production には設定しません。
+4. デプロイします。相談のやり取り（`/api/cases/[caseId]/turn`）は途中経過を順次送る形式で、1回に最大300秒かかることがあります（`maxDuration = 300`）。
+
+### 障害の再現（ローカル／Preview のみ）
+
+`FAULT_INJECTION_ENABLED=1` のとき、相談画面の URL に `?fault=` を付けると、意図的に障害を起こせます。複数指定するときはカンマ区切りです。Production では常に無効です。
+
+| 値 | 内容 |
+|---|---|
+| `gemini` | Gemini を失敗させる → ルールベースの提案で続行 |
+| `db` | DB の取得を失敗させる → 案内を表示して続行 |
+| `web` | 公式Web検索を失敗させる → DB の情報だけで続行 |
+| `providers_empty` | 事業所検索を0件にする |
+
+例: `http://localhost:3000/consult/<caseId>?fault=gemini,providers_empty`
+
+### デモ文書の埋め込みを作り直す場合（通常は不要）
+
+`supabase/seed-data/demo-documents.json` を変更したときだけ、次を実行して、生成された SQL を適用します。
 
 ```bash
 node --env-file=.env.local scripts/generate-document-embeddings.mjs <output.sql>
 ```
-
-## コマンド
-
-| コマンド | 内容 |
-|---|---|
-| `npm run dev` | 開発サーバー |
-| `npm run build` | 本番ビルド |
-| `npm test` | Vitest（ADK の分岐・ループ・再開、ツールの結果保存と冪等性、統計の扱い、失敗時の動作、提案カテゴリの候補化など） |
-| `npm run lint` | ESLint |
-| `npx tsc --noEmit` | 型チェック |
 
 ## ディレクトリ
 
