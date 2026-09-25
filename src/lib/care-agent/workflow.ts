@@ -590,7 +590,8 @@ export function createCareWorkflow(deps: WorkflowDeps) {
       .slice(0, 3)
       .map((c) => candidateProposal(c, names));
     picked = ensureConsultationProposals(picked, candidates, caseNeeds, names);
-    if (!picked.some((p) => p.targetType === "action")) {
+    // Last resort only (e.g. the lookups failed): a general consultation window instead of nothing.
+    if (!picked.length) {
       picked.push({
         targetType: "action",
         targetCode: "A002",
