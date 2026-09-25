@@ -1,36 +1,129 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 介護の相談AI（デモ）
 
-## Getting Started
+家族が介護の状況をチャットで話すと、AI が状況を整理し、足りない情報だけを質問します。
+そのうえで、次の3種類の候補を理由と根拠つきで提案します。
 
-First, run the development server:
+- 介護施設・介護サービス
+- 相談窓口
+- 介護福祉制度
+
+提案を選ぶとやることリスト（タスク）ができ、進み具合を管理できます。
+
+- 公開URL: https://product-test-blond.vercel.app
+- **扱うデータはすべて架空のデモデータです。** 人物・事業所・統計値・制度の条件は簡略化した架空の値で、医学的・制度的な判断は行いません。
+
+## できること
+
+1. **相談:** 登録済みの架空の利用者（82歳・要介護2・吹田市）について、困りごとを自由に入力します。
+2. **追加の質問:** 提案に必要な情報が足りないときだけ、選択式または自由記述で質問します（1回の提案までに最大2問）。
+3. **提案:** 介護施設・介護サービス／相談窓口／介護福祉制度から、相談内容と集めた根拠に合うものを提案します。
+   - 各カードには「なぜ候補か」「確認できたこと（デモ用の簡略ルールや制度の条件）」「参考となる利用傾向（統計）」「まだ確認したいこと」「次にやること」を表示します。
+   - 統計は参考の傾向としてだけ示し、推薦の根拠にはしません。
+4. **他の案を相談:** 「他の案も相談する」で聞き取りに戻り、別の観点で提案し直します。
+5. **事業所候補:** 介護サービスを選ぶと、周辺の架空事業所を市区町村の代表地点からの参考距離つきで表示します。0件のときはその旨だけを表示します。
+6. **タスク:** 選んだ提案に応じたタスクを作り、未着手／進行中／完了で管理します。制度や相談窓口を選んだ場合は、事業所選びを飛ばしてタスクになります。
+
+## 構成
+
+- **フロントエンド／API:** Next.js 16（App Router）、React 19、Tailwind CSS 4
+- **AI:** Google Agent Development Kit（`@google/adk` 2.1.0）の Graph Workflow と Gemini API
+- **DB:** Supabase（Postgres、PostGIS、pgvector、PGroonga）。匿名認証と RLS で、各利用者は自分の相談だけを読み書きできます。
+- **ホスティング:** Vercel
+
+### 3 Agent と Graph Workflow
+
+LLM のエージェントは次の3つだけです。全体の流れの制御は Graph Workflow の分岐とループで行い、エージェントではありません。
+
+| エージェント | 役割 | モデル |
+|---|---|---|
+| ① Care Interview | 相談内容と登録情報から事実・希望・ニーズ・意図を抽出し、次の質問を決める | `gemini-3.5-flash-lite` |
+| ② Information Collection | 型付きツールで根拠を集める（制度ルール、ニーズ別の候補、統計表、事業所検索、文書検索、公式Web検索1回まで） | `gemini-3.5-flash-lite` |
+| ③ Proposal | ケース情報と保存済みのツール結果だけを根拠に提案を作る | `gemini-3.5-flash` |
+
+流れ: 聞き取り →（質問／提案へ）→ 情報収集 → 根拠の検証・補完 → 提案 → 選択待ち →（採用 → 事業所候補 → タスク作成／他の案 → 聞き取りへ戻る）
+
+- 質問や選択の待ち状態は、ADK のセッションとして Supabase（`adk_sessions` / `adk_events`）に保存し、次のリクエストで再開します。
+- ツールが返した値（事業所・距離・統計・制度の判定）は、そのまま `proposal_sources` に保存し、これを正とします。モデルの出力から値を書き戻すことはしません。
+- 氏名などの識別情報は Gemini に送りません。
+
+### 失敗時の動作
+
+- **Agent③:** `gemini-3.5-flash` で失敗したときだけ `gemini-3.5-flash-lite` で1回やり直します（最大2リクエスト）。それも失敗したときだけ、保存済みの根拠からルールベースで提案します。
+- **Agent①・②:** 失敗したときは、登録情報から推定した内容で処理を続けます。
+- **DB・事業所検索・Web検索の失敗:** 失敗しても画面は止まらず、案内を表示して続行します。
+- **利用上限:**
+  - 1ケースあたり：Gemini 20リクエスト、提案3回、質問5問、送信15回、Web検索1回
+  - 匿名ユーザー1人あたり：1日3ケース
+
+## 動作環境
+
+開発と動作確認に使ったバージョンです。
+
+- Node.js 24.21.0
+- npm 11.19.0
+
+## セットアップ
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm ci
+cp .env.example .env.local   # 値は各自の環境のものを設定する
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 環境変数
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`.env.example` に変数名の一覧があります。値はリポジトリに含めません。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| 変数 | 用途 |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase プロジェクトの URL |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase の publishable key（ブラウザ・サーバー共通。service role / secret key は使いません） |
+| `GEMINI_API_KEY` | Gemini API キー（サーバー側のみ） |
+| `FAULT_INJECTION_ENABLED` | 任意。`1` のとき、障害を意図的に起こす試験を有効にします（`x-demo-fault` ヘッダー／`?fault=`）。**Preview 専用で、Production には設定しません**（コード側でも Production では無効） |
 
-## Learn More
+### Supabase
 
-To learn more about Next.js, take a look at the following resources:
+1. 匿名サインイン（Anonymous Sign-ins）を有効にします。
+2. `supabase/migrations/` を順に適用します。テーブル・RLS・関数・デモデータ・文書の埋め込みまで含みます。
+3. デモ文書の埋め込みを作り直す場合は、次を実行して生成した SQL を適用します。
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+node --env-file=.env.local scripts/generate-document-embeddings.mjs <output.sql>
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## コマンド
 
-## Deploy on Vercel
+| コマンド | 内容 |
+|---|---|
+| `npm run dev` | 開発サーバー |
+| `npm run build` | 本番ビルド |
+| `npm test` | Vitest（ADK の分岐・ループ・再開、ツールの結果保存と冪等性、統計の扱い、失敗時の動作、提案カテゴリの候補化など） |
+| `npm run lint` | ESLint |
+| `npx tsc --noEmit` | 型チェック |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## ディレクトリ
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```
+src/app/                  画面（開始・相談・タスク）と API（/api/cases, /api/cases/[caseId]/turn, /api/tasks/[taskId]）
+src/lib/care-agent/       3 Agent・Graph Workflow・型付きツール・DB アクセス・画面用の組み立て
+src/lib/adk/              Supabase に保存する ADK SessionService
+src/lib/supabase/         Supabase クライアント（ブラウザ・サーバー）
+supabase/migrations/      スキーマとデモデータ（追加のみ）
+supabase/seed-data/       デモ文書
+scripts/                  デモ文書の埋め込み生成
+tests/                    Vitest
+```
+
+## デモの操作例
+
+1. 「相談をはじめる」→「例文を入力欄に入れる」→ 送信
+2. 質問に回答（例：入浴の頻度「週2〜3回」、サービスへの意向「前向き」）→ 提案1回目
+3. 「費用や制度はどこに相談すればよいですか？」と送信 → 相談窓口・介護福祉制度を含む提案
+4. 「訪問入浴介護」を選ぶ → 架空の事業所を選ぶ → タスクの状態を変更
+
+## 既知の制限
+
+- 事業所・統計・制度・文書はすべて架空または簡略化したデモデータです。
+  - 架空事業所は9件で、訪問リハビリ・短期入所・老健・介護医療院は候補が0件になります。
+- Web検索が失敗したときの動作は、ユニットテストでのみ確認しています。
+- 距離は、本人の住所ではなく市区町村の代表地点からの参考値です。
