@@ -150,11 +150,20 @@ export const NEED_CODES = [
   "certification_needed",
   "consultation_entry",
   "care_plan_review",
+  "cost_burden",
+  "family_work_balance",
 ] as const;
 export type NeedCode = (typeof NEED_CODES)[number];
 
+// Needs about where to consult / which programs apply. Candidates for them are consultation windows
+// (actions) and care/welfare programs, not only services.
+export const CONSULTATION_NEEDS: readonly NeedCode[] = ["consultation_entry", "cost_burden", "family_work_balance", "care_plan_review", "certification_needed"];
+
 export const SERVICE_CODES = ["S001", "S002", "S003", "S004", "S005", "S006", "S007", "S008", "S009", "S010", "S011", "S012", "S013"] as const;
 export const ACTION_CODES = ["A001", "A002", "A003"] as const;
+export const PROGRAM_CODES = ["P001", "P002", "P003", "P004", "P005"] as const;
+/** Proposal categories: care services/facilities, consultation windows / procedures, care & welfare programs. */
+export type TargetType = "service" | "action" | "program";
 export const STAT_TABLE_CODES = ["K25-42", "K25-45", "K25-47", "K25-69", "K25-87", "C26-2", "C26-9", "C26-10", "S22-34", "S22-36", "S22-37", "S24-DEMO"] as const;
 
 // ---------------------------------------------------------------------------
@@ -278,6 +287,7 @@ export function inferNeedsFromFacts(facts: Record<string, unknown>): NeedCode[] 
   if (/一人|独居/.test(text("household")) || /困難/.test(text("family_weekday_daytime"))) needs.add("daytime_supervision");
   if (/あり/.test(text("dementia"))) needs.add("dementia_care");
   if (["not_applied", "applying", "unknown"].includes(text("certification_status") || "unknown")) needs.add("certification_needed");
+  if (["high", "some"].includes(text("cost_concern"))) needs.add("cost_burden");
   return [...needs];
 }
 

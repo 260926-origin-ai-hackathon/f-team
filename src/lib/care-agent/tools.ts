@@ -315,7 +315,9 @@ export function createCollectionTools(getCtx: () => ToolContext) {
     }),
     new FunctionTool({
       name: "get_need_service_candidates",
-      description: "生活上のニーズ（need code）に対応する介護サービス・相談先の候補を返します。",
+      description:
+        "生活上のニーズ（need code）に対応する候補を返します。候補は介護サービス（service_code）・相談窓口や手続き（action_code）・" +
+        "介護福祉制度（program_code と制度の簡略条件）の3種類です。相談先・費用・仕事との両立に関するニーズも指定してください。",
       parameters: z.object({ needCodes: z.array(z.enum(NEED_CODES)).min(1) }),
       execute: ({ needCodes }) => getNeedServiceCandidates(getCtx(), needCodes),
     }),

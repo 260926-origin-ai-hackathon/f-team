@@ -331,7 +331,9 @@ function MessageItem({
       <div className="space-y-2">
         <AssistantBubble>
           <p>{message.content}</p>
-          {typeof message.payload.distanceNote === "string" && <p className="mt-1 text-xs text-gray-500">{message.payload.distanceNote}</p>}
+          {providers.length > 0 && typeof message.payload.distanceNote === "string" && (
+            <p className="mt-1 text-xs text-gray-500">{message.payload.distanceNote}</p>
+          )}
         </AssistantBubble>
         {providers.map((p) => (
           <div key={p.provider_id} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
@@ -408,7 +410,7 @@ function ProposalCard({
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-emerald-600 text-sm font-bold text-white">{proposal.rank}</span>
         <div className="min-w-0">
           <h2 className="break-words font-bold leading-snug">{proposal.title}</h2>
-          <p className="text-xs text-gray-500">{proposal.target_type === "service" ? "介護サービス" : "相談・手続き"}</p>
+          <p className="text-xs text-gray-500">{proposal.category}</p>
         </div>
         {proposal.decision === "accepted" && <span className="ml-auto shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-800">選択済み</span>}
       </div>
@@ -433,13 +435,23 @@ function ProposalCard({
               </li>
             ))}
             {c.institutionalBasis?.map((t) => <li key={t}>・{t}</li>)}
+            {e.program && (
+              <>
+                <li>
+                  ・対象の目安：{e.program.conditionsNote}
+                </li>
+                <li>・申請・相談窓口：{e.program.whereToApply}</li>
+                <li className="text-xs text-amber-900">・{e.program.caveat}</li>
+              </>
+            )}
             {e.nearbyProviderCount !== null && (
               <li>・{e.nearbyProviderCount > 0 ? `周辺に対象の事業所があります（${e.nearbyProviderCount}件・架空）` : "周辺に対象の事業所は見つかりませんでした"}</li>
             )}
             {e.webChecked && <li>・{e.webChecked.available ? "公式Web情報を確認しました（要最終確認）" : "公式Web情報は確認できませんでした（DB内の情報で提案）"}</li>}
           </ul>
         </Section>
-        {(c.populationContext?.length || e.statTables.length) ? (
+        {/* Usage statistics describe services, so they are shown on service cards only. */}
+        {proposal.target_type === "service" && (c.populationContext?.length || e.statTables.length) ? (
           <Section title="参考となる利用傾向">
             {list(c.populationContext)}
             {e.statTables.map((t) => (

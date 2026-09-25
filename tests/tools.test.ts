@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { queryStatTableData, runTool, searchOfficialWeb, searchProviders, type ToolContext } from "@/lib/care-agent/tools";
+import { getNeedServiceCandidates, queryStatTableData, runTool, searchOfficialWeb, searchProviders, type ToolContext } from "@/lib/care-agent/tools";
 import { fakeSupabase } from "./fake-supabase";
 
 function statTables() {
@@ -81,5 +81,25 @@ describe("failure fallbacks", () => {
   it("does not search the web twice in one case", async () => {
     const result = await searchOfficialWeb(ctx({ case_usage: [{ case_id: "c1", kind: "web_search" }] }), "query");
     expect(result).toMatchObject({ available: false, reason: "web_search_budget_exhausted" });
+  });
+});
+
+describe("need candidates include consultation windows and programs", () => {
+  it("returns program candidates with their stored conditions", async () => {
+    const tables = {
+      need_service_mappings: [{ need_code: "cost_burden", need_label: "費用負担が心配", service_code: null, action_code: "A003", strength: "primary", rationale: "r" }],
+      need_program_mappings: [
+        {
+          need_code: "cost_burden", need_label: "費用負担が心配", program_code: "P001", strength: "primary", rationale: "r",
+          care_programs: { name: "高額介護サービス費", conditions_note: "c", where_to_apply: "w", caveat: "k" },
+        },
+      ],
+    };
+    const result = await getNeedServiceCandidates(ctx(tables), ["cost_burden"]);
+    expect(result.status).toBe("ok");
+    expect(result.results).toEqual([
+      expect.objectContaining({ action_code: "A003" }),
+      expect.objectContaining({ program_code: "P001", service_code: null, action_code: null, program: expect.objectContaining({ where_to_apply: "w" }) }),
+    ]);
   });
 });

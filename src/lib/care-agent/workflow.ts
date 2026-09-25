@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   AGENT_NAMES,
   BUDGET,
+  CONSULTATION_NEEDS,
   QUESTION_CATALOG,
   buildLlmCaseView,
   findCatalogQuestion,
@@ -11,6 +12,8 @@ import {
   violatesStatPolicy,
   type CaseIdentity,
   type FactRow,
+  type NeedCode,
+  type TargetType,
 } from "./domain";
 import {
   createCollectionAgent,
@@ -42,6 +45,7 @@ import {
   saveProposals,
   updateCase,
   updateProposalRun,
+  type NeedMappingRow,
   type SourceRow,
 } from "./repo";
 import {
@@ -133,15 +137,106 @@ function toolContext(deps: WorkflowDeps, runId: string, facts: FactRow[], identi
   return { sb: deps.sb, caseId: deps.caseId, runId, cityCode: deps.cityCode, facts: factsRecord(facts), identity, faults: deps.faults };
 }
 
-// Compact, PII-free view of stored tool results for the Proposal Agent.
-/** When no question will be shown, a reply must not end by asking one. */
-export function withoutTrailingQuestion(text: string) {
-  const sentences = text.trim().match(/[^。！？!?]+[。！？!?]*/g) ?? [];
-  while (sentences.length && /[？?]\s*$/.test(sentences[sentences.length - 1])) sentences.pop();
-  const kept = sentences.join("").trim();
-  return kept === text.trim() ? kept : `${kept}いただいた情報をもとに、提案をまとめます。`;
+export const TO_PROPOSAL_MESSAGE = "ありがとうございます。いただいた情報をもとに、提案をまとめます。";
+
+/**
+ * The interview reply to show, chosen from workflow state rather than by parsing the text: when the
+ * agent wanted to ask a question but the workflow moves on to proposals (question caps, the user's
+ * request), its reply was written as a lead-in to that question, so a transition message replaces it.
+ */
+export function interviewReply(output: Pick<InterviewOutput, "assistantMessage" | "nextQuestion" | "readyToPropose">, asking: boolean) {
+  const text = output.assistantMessage?.trim() ?? "";
+  if (asking) return text;
+  const agentWantedToAsk = output.nextQuestion?.kind !== "none" && !output.readyToPropose;
+  return agentWantedToAsk ? TO_PROPOSAL_MESSAGE : text;
 }
 
+/** Needs carried by Agent①'s output; a consultation/program question always yields a consultation need. */
+export function needsFromInterview(output: Pick<InterviewOutput, "needs" | "intent">, fallbackNeeds: NeedCode[]): NeedCode[] {
+  const needs = new Set<NeedCode>(output.needs?.length ? output.needs : fallbackNeeds);
+  if (output.intent === "ask_consultation_or_program" && !CONSULTATION_NEEDS.some((n) => needs.has(n))) needs.add("consultation_entry");
+  return [...needs];
+}
+
+// --- Proposal candidates (services, consultation windows, programs) -----------------------------
+type ProposalItem = ProposalOutput["proposals"][number];
+export type NeedCandidate = NeedMappingRow;
+
+function needCandidates(sources: SourceRow[]): NeedCandidate[] {
+  return sources
+    .filter((s) => s.tool_name === "get_need_service_candidates" && s.status === "ok")
+    .flatMap((s) => (s.result.results as NeedCandidate[]) ?? []);
+}
+
+export function candidateCode(c: NeedCandidate) {
+  return c.service_code ?? c.action_code ?? c.program_code ?? null;
+}
+
+/** The category follows the code itself (S… service, A… consultation/procedure, P… program). */
+export function targetTypeOf(code: string): TargetType {
+  return code.startsWith("A") ? "action" : code.startsWith("P") ? "program" : "service";
+}
+
+function candidateProposal(c: NeedCandidate, names: Map<string, string>): ProposalItem {
+  const code = candidateCode(c)!;
+  const base = { targetType: targetTypeOf(code), targetCode: code, title: names.get(code) ?? c.need_label, relatedSituations: [c.need_label], populationContext: [] };
+  if (c.program_code) {
+    return {
+      ...base,
+      whyCandidate: [`${c.need_label}に関係する制度です。`, c.rationale],
+      // The program's conditions / where to apply are shown from the stored tool result (card evidence).
+      institutionalBasis: [],
+      unverified: ["ご本人・ご家族が制度の対象になるか（公式情報で確認）"],
+      nextActions: ["自治体などの公式情報で要件を確認する", "ケアマネジャー等に申請方法を相談する"],
+    };
+  }
+  if (c.action_code) {
+    return {
+      ...base,
+      whyCandidate: [`${c.need_label}について相談できる窓口です。`, c.rationale],
+      institutionalBasis: [],
+      unverified: ["連絡先・受付時間（自治体公式情報で確認）"],
+      nextActions: ["相談したいことを整理して連絡する"],
+    };
+  }
+  return {
+    ...base,
+    whyCandidate: [`${c.need_label}に対応する候補です。`, c.rationale],
+    institutionalBasis: ["デモ用の簡略ルールで制度上の対象外に該当しないことを確認しました。"],
+    unverified: ["利用可能な日時", "料金", "ご本人の意向"],
+    nextActions: ["家族で利用希望を確認する", "事業所や担当ケアマネジャーに相談する"],
+  };
+}
+
+/**
+ * When the case has consultation/cost/work-balance needs (Agent①) and the collected candidates
+ * (Agent②'s tool results) contain a consultation window or program for them, make sure at least one
+ * of each is proposed — being certified or having a care manager is no reason to drop them.
+ */
+export function ensureConsultationProposals(
+  proposals: ProposalItem[],
+  candidates: NeedCandidate[],
+  caseNeeds: string[],
+  names: Map<string, string>,
+  max = 4,
+): ProposalItem[] {
+  const needs = new Set(caseNeeds.filter((n) => (CONSULTATION_NEEDS as readonly string[]).includes(n)));
+  if (!needs.size) return proposals;
+  const relevant = candidates
+    .filter((c) => needs.has(c.need_code) && !c.service_code && candidateCode(c))
+    .sort((a, b) => (a.strength === b.strength ? 0 : a.strength === "primary" ? -1 : 1));
+  const proposed = new Set(proposals.map((p) => p.targetCode));
+  const additions: ProposalItem[] = [];
+  for (const type of ["action", "program"] as const) {
+    if (proposals.some((p) => p.targetType === type)) continue;
+    const pick = relevant.find((c) => targetTypeOf(candidateCode(c)!) === type && !proposed.has(candidateCode(c)!));
+    if (pick) additions.push(candidateProposal(pick, names));
+  }
+  if (!additions.length) return proposals;
+  return [...proposals.slice(0, Math.max(1, max - additions.length)), ...additions].slice(0, max);
+}
+
+// Compact, PII-free view of stored tool results for the Proposal Agent.
 function compactSources(sources: SourceRow[]) {
   return sources.map((s) => ({ tool: s.tool_name, args: s.tool_args, status: s.status, result: s.result }));
 }
@@ -199,7 +294,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         (output.preferenceUpdates ?? []).map((p) => ({ key: p.key, value: p.value, holder: p.holder, source: "user_message" as const })),
         prefix,
       );
-      const needs = output.needs?.length ? output.needs : output.fallback ? inferNeedsFromFacts(known) : [];
+      const needs = needsFromInterview(output, output.fallback ? inferNeedsFromFacts(known) : []);
       await saveFacts(
         deps.sb,
         deps.caseId,
@@ -207,7 +302,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         prefix,
       );
       const saveReply = async (asking: boolean) => {
-        const text = asking ? output.assistantMessage?.trim() : withoutTrailingQuestion(output.assistantMessage ?? "");
+        const text = interviewReply(output, asking);
         if (text) await saveMessage(deps.sb, deps.caseId, { role: "assistant", kind: "text", content: text }, `${prefix}:reply`);
       };
 
@@ -347,6 +442,16 @@ export function createCareWorkflow(deps: WorkflowDeps) {
       if (!ran.has("get_need_service_candidates") && needList.length) {
         candidates = ((await getNeedServiceCandidates(tctx, needList)).results as typeof candidates) ?? [];
         supplemented.push("get_need_service_candidates");
+      } else {
+        // Needs the agent left out of its lookup (e.g. consultation/cost) still need candidates as evidence.
+        const looked = new Set(
+          saved.filter((s) => s.tool_name === "get_need_service_candidates").flatMap((s) => (s.tool_args.needCodes as string[] | undefined) ?? []),
+        );
+        const missing = needList.filter((n) => !looked.has(n));
+        if (missing.length) {
+          await getNeedServiceCandidates(tctx, missing);
+          supplemented.push("get_need_service_candidates");
+        }
       }
       // A stat lookup that ignored the known care level is not specific enough to cite as context.
       const statByCareLevel = saved.some(
@@ -399,10 +504,20 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         effect: string;
       }[];
       const blocked = new Set(rules.filter((r) => r.effect === "not_eligible_in_principle").map((r) => r.target.code));
+      const candidates = needCandidates(sources);
+      // Consultation windows and programs must come from the collected candidates or rule results.
+      const groundedTargets = new Set([...candidates.map(candidateCode), ...rules.map((r) => r.target.code)]);
+      const { facts } = await loadCaseContext(deps);
+      const caseNeeds = facts.filter((f) => f.fact_key.startsWith("need:") && f.value === true).map((f) => f.fact_key.slice(5));
+      const { services, actions, programs } = await getServicesAndActions(deps.sb);
+      const canonicalNames = new Map([...services, ...actions, ...programs].map((s) => [s.code, s.name]));
 
-      let proposals = output?.fallback ? await deterministicProposals(sources) : output?.proposals ?? [];
-      proposals = proposals.filter((p) => !blocked.has(p.targetCode));
-      if (!proposals.length) proposals = await deterministicProposals(sources);
+      let proposals = output?.fallback ? deterministicProposals(candidates, caseNeeds, canonicalNames) : output?.proposals ?? [];
+      proposals = proposals
+        .map((p) => ({ ...p, targetType: targetTypeOf(p.targetCode) }))
+        .filter((p) => !blocked.has(p.targetCode) && (p.targetType === "service" || groundedTargets.has(p.targetCode)));
+      if (!proposals.length) proposals = deterministicProposals(candidates, caseNeeds, canonicalNames);
+      proposals = ensureConsultationProposals(proposals, candidates, caseNeeds, canonicalNames);
 
       // Grounding: identifiers the model cites must exist in the saved tool results.
       const knownRuleIds = new Set(rules.map((r) => (r as unknown as { ruleId: string }).ruleId));
@@ -419,13 +534,12 @@ export function createCareWorkflow(deps: WorkflowDeps) {
           // Internal field names are not user-facing text.
           .map((s) => s.replace(/\s*[（(][^（）()]*\b(?:not_)?conditioned_on\b[^（）()]*[）)]/g, "").replace(/\b(?:not_)?conditioned_on\b/g, "条件"))
           .map((s) => (violatesStatPolicy(s) ? "統計は参考となる利用傾向であり、この方に適しているかは個別に確認が必要です。" : s));
-      // Titles come from the service/action master, never from model text.
-      const { services, actions } = await getServicesAndActions(deps.sb);
-      const canonicalNames = new Map([...services, ...actions].map((s) => [s.code, s.name]));
+      // Titles come from the service/action/program master, never from model text.
       proposals = proposals.map((p) => ({
         ...p,
         title: canonicalNames.get(p.targetCode) ?? p.title,
-        populationContext: statSources.length ? p.populationContext : [],
+        // Usage statistics describe services; they are not context for consultation windows or programs.
+        populationContext: statSources.length && p.targetType === "service" ? p.populationContext : [],
       }));
 
       await saveProposals(
@@ -463,38 +577,20 @@ export function createCareWorkflow(deps: WorkflowDeps) {
     { name: "save_proposal" },
   );
 
-  async function deterministicProposals(sources: SourceRow[]): Promise<ProposalOutput["proposals"]> {
-    const { services, actions } = await getServicesAndActions(deps.sb);
-    const names = new Map([...services, ...actions].map((s) => [s.code, s.name]));
-    const candidates = (sources.find((s) => s.tool_name === "get_need_service_candidates")?.result.results ?? []) as {
-      service_code: string | null;
-      action_code: string | null;
-      need_label: string;
-      rationale: string;
-      strength: string;
-    }[];
+  function deterministicProposals(candidates: NeedCandidate[], caseNeeds: string[], names: Map<string, string>): ProposalItem[] {
     const seen = new Set<string>();
-    const picked = candidates
-      .filter((c) => c.strength === "primary")
+    let picked = candidates
+      .filter((c) => c.strength === "primary" && candidateCode(c))
       .filter((c) => {
-        const code = c.service_code ?? c.action_code!;
+        const code = candidateCode(c)!;
         if (seen.has(code)) return false;
         seen.add(code);
         return true;
       })
       .slice(0, 3)
-      .map((c) => ({
-        targetType: (c.service_code ? "service" : "action") as "service" | "action",
-        targetCode: (c.service_code ?? c.action_code)!,
-        title: names.get((c.service_code ?? c.action_code)!) ?? "候補",
-        whyCandidate: [`${c.need_label}に対応する候補です。`, c.rationale],
-        relatedSituations: [c.need_label],
-        institutionalBasis: ["デモ用の簡略ルールで制度上の対象外に該当しないことを確認しました。"],
-        populationContext: [],
-        unverified: ["利用可能な日時", "料金", "ご本人の意向"],
-        nextActions: ["家族で利用希望を確認する", "事業所や担当ケアマネジャーに相談する"],
-      }));
-    if (!seen.has("A002")) {
+      .map((c) => candidateProposal(c, names));
+    picked = ensureConsultationProposals(picked, candidates, caseNeeds, names);
+    if (!picked.some((p) => p.targetType === "action")) {
       picked.push({
         targetType: "action",
         targetCode: "A002",
@@ -507,7 +603,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
         nextActions: ["担当の地域包括支援センターを調べる"],
       });
     }
-    return picked;
+    return picked.slice(0, 4);
   }
 
   // --- Decision --------------------------------------------------------------
@@ -565,7 +661,7 @@ export function createCareWorkflow(deps: WorkflowDeps) {
             : result.status === "error"
               ? "事業所情報を取得できませんでした。時間をおいて確認するか、ケアマネジャーにご相談ください。タスクは作成します。"
               : "周辺で該当する事業所が見つかりませんでした。タスクは作成します。",
-          payload: { proposalId, status: result.status, providers, distanceNote: result.distanceNote ?? null },
+          payload: { proposalId, status: result.status, providers, distanceNote: providers.length ? (result.distanceNote ?? null) : null },
         },
         idem(ctx, "providers"),
       );

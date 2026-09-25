@@ -5,6 +5,7 @@ import {
   getCurrentFacts,
   getCurrentPreferences,
   getIdentity,
+  getServicesAndActions,
   getUsage,
   listMessages,
   listProposalRuns,
@@ -12,6 +13,7 @@ import {
   listTasks,
   listToolResults,
   type MessageRow,
+  type NeedMappingRow,
   type ProposalRow,
   type SourceRow,
   type TaskRow,
@@ -63,7 +65,23 @@ export type ProposalEvidence = {
   nearbyProviderCount: number | null;
   statTables: { table: string; title: string; conditionedOn: string[]; notConditionedOn: string[]; multipleResponse: boolean; isDemo: boolean }[];
   webChecked: { available: boolean; sources: { title: string; url: string; official: boolean }[] } | null;
+  // Program facts as stored by the candidate tool (demo-simplified conditions, where to apply).
+  program: { conditionsNote: string; whereToApply: string; caveat: string } | null;
 };
+
+export type ProposalCategory = "介護施設" | "介護サービス" | "相談窓口" | "手続き" | "介護福祉制度";
+
+type Masters = Awaited<ReturnType<typeof getServicesAndActions>>;
+
+/** User-facing category: care facility / care service, consultation window (or procedure), welfare program. */
+export function proposalCategory(proposal: Pick<ProposalRow, "target_type" | "target_code">, masters: Masters): ProposalCategory {
+  if (proposal.target_type === "program") return "介護福祉制度";
+  if (proposal.target_type === "action") {
+    return masters.actions.find((a) => a.code === proposal.target_code)?.action_type === "application" ? "手続き" : "相談窓口";
+  }
+  const category = masters.services.find((s) => s.code === proposal.target_code)?.category;
+  return category === "residential" || category === "short_stay" ? "介護施設" : "介護サービス";
+}
 
 function evidenceFor(proposal: ProposalRow, sources: SourceRow[]): ProposalEvidence {
   const rules = sources
@@ -92,7 +110,15 @@ function evidenceFor(proposal: ProposalRow, sources: SourceRow[]): ProposalEvide
       isDemo: Boolean(s.result.is_demo),
     }));
   const web = sources.find((s) => s.tool_name === "search_official_web");
+  const program =
+    proposal.target_type === "program"
+      ? sources
+          .filter((s) => s.tool_name === "get_need_service_candidates" && s.status === "ok")
+          .flatMap((s) => (s.result.results as NeedMappingRow[]) ?? [])
+          .find((c) => c.program_code === proposal.target_code && c.program)?.program ?? null
+      : null;
   return {
+    program: program ? { conditionsNote: program.conditions_note, whereToApply: program.where_to_apply, caveat: program.caveat } : null,
     rules,
     nearbyProviderCount: proposal.target_type === "service" && providerResults.length ? new Set(nearby.map((p) => p.provider_id)).size : null,
     statTables: [...new Map(statTables.map((t) => [t.table, t])).values()],
@@ -110,7 +136,7 @@ export type CaseViewModel = Awaited<ReturnType<typeof buildCaseViewModel>>;
 export async function buildCaseViewModel(sb: SupabaseClient, caseId: string) {
   const careCase = await getCase(sb, caseId);
   if (!careCase) return null;
-  const [identity, facts, preferences, messages, runs, proposals, tasks, usage] = await Promise.all([
+  const [identity, facts, preferences, messages, runs, proposals, tasks, usage, masters] = await Promise.all([
     getIdentity(sb, caseId),
     getCurrentFacts(sb, caseId),
     getCurrentPreferences(sb, caseId),
@@ -119,6 +145,7 @@ export async function buildCaseViewModel(sb: SupabaseClient, caseId: string) {
     listProposals(sb, caseId),
     listTasks(sb, caseId),
     getUsage(sb, caseId),
+    getServicesAndActions(sb),
   ]);
   const runIds = runs.map((r) => r.id);
   const reusedFrom = new Map(
@@ -150,7 +177,7 @@ export async function buildCaseViewModel(sb: SupabaseClient, caseId: string) {
       status: run.status,
       proposals: proposals
         .filter((p) => p.run_id === run.id)
-        .map((p) => ({ ...p, evidence: evidenceFor(p, runSources) })),
+        .map((p) => ({ ...p, category: proposalCategory(p, masters), evidence: evidenceFor(p, runSources) })),
     };
   });
 

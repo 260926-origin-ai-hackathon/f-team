@@ -6,6 +6,7 @@ import {
   type EligibilityRule,
   type FactRow,
   type PreferenceRow,
+  type TargetType,
   type UsageCounts,
   type UsageKind,
 } from "./domain";
@@ -325,7 +326,7 @@ export type ProposalRow = {
   id: string;
   run_id: string;
   rank: number;
-  target_type: "service" | "action";
+  target_type: TargetType;
   target_code: string;
   title: string;
   content: Record<string, unknown>;
@@ -376,16 +377,35 @@ export type NeedMappingRow = {
   need_label: string;
   service_code: string | null;
   action_code: string | null;
+  program_code?: string | null;
   strength: "primary" | "secondary";
   rationale: string;
+  // Program candidates carry the program's own (demo) conditions so they can be shown as evidence.
+  program?: { name: string; conditions_note: string; where_to_apply: string; caveat: string } | null;
 };
 
 export async function getNeedMappings(sb: SupabaseClient, needCodes: string[]): Promise<NeedMappingRow[]> {
   if (!needCodes.length) return [];
-  return check(
+  const services = check(
     await sb.from("need_service_mappings").select("need_code, need_label, service_code, action_code, strength, rationale").in("need_code", needCodes),
     "getNeedMappings",
   ) as NeedMappingRow[];
+  const programs = check(
+    await sb
+      .from("need_program_mappings")
+      .select("need_code, need_label, program_code, strength, rationale, care_programs(name, conditions_note, where_to_apply, caveat)")
+      .in("need_code", needCodes),
+    "getNeedProgramMappings",
+  ) as unknown as (Omit<NeedMappingRow, "service_code" | "action_code" | "program"> & { care_programs: NonNullable<NeedMappingRow["program"]> | NonNullable<NeedMappingRow["program"]>[] | null })[];
+  return [
+    ...services,
+    ...programs.map(({ care_programs, ...row }) => ({
+      ...row,
+      service_code: null,
+      action_code: null,
+      program: Array.isArray(care_programs) ? (care_programs[0] ?? null) : care_programs,
+    })),
+  ];
 }
 
 export async function getServicesAndActions(sb: SupabaseClient) {
@@ -401,25 +421,34 @@ export async function getServicesAndActions(sb: SupabaseClient) {
     action_type: string;
     description: string;
   }[];
-  return { services, actions };
+  const programs = check(await sb.from("care_programs").select("code, name, program_type, description"), "programs") as {
+    code: string;
+    name: string;
+    program_type: string;
+    description: string;
+  }[];
+  return { services, actions, programs };
 }
 
 export type TaskTemplateRow = {
   id: string;
-  target_type: "service" | "action";
+  target_type: TargetType;
   target_code: string;
   title: string;
   steps: { step_id: string; title: string; detail: string; requires_official_check: boolean }[];
   caveat: string;
 };
 
-export async function getTaskTemplate(sb: SupabaseClient, targetType: "service" | "action", targetCode: string): Promise<TaskTemplateRow | null> {
+const GENERIC_TEMPLATE_IDS: Partial<Record<TargetType, string>> = { service: "T-GENERIC", program: "T-PROGRAM" };
+
+export async function getTaskTemplate(sb: SupabaseClient, targetType: TargetType, targetCode: string): Promise<TaskTemplateRow | null> {
   const exact = check(
     await sb.from("task_templates").select("*").eq("target_type", targetType).eq("target_code", targetCode).maybeSingle(),
     "getTaskTemplate",
   ) as TaskTemplateRow | null;
-  if (exact || targetType === "action") return exact;
-  return check(await sb.from("task_templates").select("*").eq("id", "T-GENERIC").maybeSingle(), "generic template") as TaskTemplateRow | null;
+  const genericId = GENERIC_TEMPLATE_IDS[targetType];
+  if (exact || !genericId) return exact;
+  return check(await sb.from("task_templates").select("*").eq("id", genericId).maybeSingle(), "generic template") as TaskTemplateRow | null;
 }
 
 // ---------------------------------------------------------------------------
